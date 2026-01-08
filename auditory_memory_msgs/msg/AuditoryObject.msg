@@ -3,7 +3,13 @@ std_msgs/Header header
 string auditory_object_id
 string location_id
 
-string state # NEW, ACTIVE, BACKGROUND, INACTIVATE
+# Sound status constants
+uint8 STATE_NEW = 0
+uint8 STATE_ACTIVE = 1
+uint8 STATE_BACKGROUND = 2
+uint8 STATE_INACTIVE = 3
+
+uint8 state
 
 float32 confidence
 float32 novelty

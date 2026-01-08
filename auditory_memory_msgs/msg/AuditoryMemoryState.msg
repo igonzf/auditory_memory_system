@@ -1,1 +1,2 @@
+std_msgs/Header header
 auditory_memory_msgs/AuditoryObject[] auditory_objects
