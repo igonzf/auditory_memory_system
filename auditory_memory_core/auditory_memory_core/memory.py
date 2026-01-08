@@ -14,11 +14,12 @@ class MemoryEntry:
     auditory_object: AuditoryObject
 
     # Actual episode
-    episode_start_time: Time
+    episode_start_time: float
 
     # History
     episode_count: int = 0
     ema_episode_duration: float = 0.0
+    last_episode_duration: float = 0.0
     hour_hist: List[int] = field(default_factory=lambda: [0]*24)
 
     # Recent frequency

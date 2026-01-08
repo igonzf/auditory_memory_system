@@ -20,6 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'auditory_memory_node = auditory_memory_core.auditory_memory_node:main',
         ],
     },
 )
