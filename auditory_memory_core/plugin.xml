@@ -1,0 +1,17 @@
+<library path="auditory_memory_core">
+  <class name="Auditory Memory Graph Viewer"
+         type="auditory_memory_core.auditory_memory_plugin.AuditoryMemoryPlugin"
+         base_class_type="rqt_gui_py::Plugin">
+    <description>
+      Live NetworkX/Matplotlib viewer for the Auditory Memory working-memory graph.
+    </description>
+    <qtgui>
+      <group>
+        <label>Robot Tools</label>
+      </group>
+      <label>Auditory Memory Graph Viewer</label>
+      <icon type="theme">applications-science</icon>
+      <statustip>Inspect auditory working memory graph, arousal, focus, and episodes.</statustip>
+    </qtgui>
+  </class>
+</library>
