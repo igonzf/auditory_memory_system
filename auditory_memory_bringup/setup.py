@@ -19,7 +19,7 @@ setup(
     zip_safe=True,
     maintainer='gentlebots',
     maintainer_email='igonzf06@estudiantes.unileon.es',
-    description='TODO: Package description',
+    description='Launch files for the auditory memory system.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={

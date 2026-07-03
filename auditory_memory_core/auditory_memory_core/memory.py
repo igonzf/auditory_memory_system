@@ -47,6 +47,7 @@ class LongTermMemory:
     def __init__(self, path: str):
         self.path = os.path.expanduser(path)
         self.graph = nx.DiGraph()
+        self.recent_updates: List[Dict] = []
         self.load()
 
     def load(self) -> None:
@@ -125,8 +126,9 @@ class LongTermMemory:
         last_heard_s: float,
         co_occurring_sounds: Iterable[str],
         novelty: float,
-    ) -> None:
+    ) -> List[Dict]:
         now_s = time.time()
+        updates = []
         sound_node = self.sound_node(sound_type)
         location_node = self.location_node(location_id)
         self._ensure_sound(sound_node, sound_type)
@@ -142,17 +144,116 @@ class LongTermMemory:
             hour_hist = [0] * 24
         hour_hist[time.localtime(started_at_s).tm_hour] += 1
         sound_attrs['hour_hist'] = hour_hist
+        updates.append({
+            'type': 'sound',
+            'description': f'Pattern reinforced: {sound_type}',
+            'sound': sound_type,
+            'familiarity': float(sound_attrs['familiarity']),
+            'count': count,
+        })
+        period, period_count = self._strongest_time_period(hour_hist)
+        updates.append({
+            'type': 'time',
+            'description': f'Pattern reinforced: {sound_type} -> {period}',
+            'sound': sound_type,
+            'period': period,
+            'count': period_count,
+        })
 
-        self._reinforce_edge(sound_node, location_node, 'heard_in', novelty, now_s)
-        self._reinforce_edge(location_node, sound_node, 'typical_for', novelty, now_s)
+        sound_location = self._reinforce_edge(sound_node, location_node, 'heard_in', novelty, now_s)
+        updates.append({
+            'type': 'sound_location',
+            'description': f'Pattern reinforced: {sound_type} -> {location_id}',
+            'sound': sound_type,
+            'location': location_id,
+            'weight': sound_location['weight'],
+            'count': sound_location['count'],
+        })
+        location_sound = self._reinforce_edge(location_node, sound_node, 'typical_for', novelty, now_s)
+        updates.append({
+            'type': 'location_sound',
+            'description': f'Pattern reinforced: {location_id} -> {sound_type}',
+            'location': location_id,
+            'sound': sound_type,
+            'weight': location_sound['weight'],
+            'count': location_sound['count'],
+        })
 
         for other in co_occurring_sounds:
             if not other or other == sound_type:
                 continue
             other_node = self.sound_node(other)
             self._ensure_sound(other_node, other)
-            self._reinforce_edge(sound_node, other_node, 'co_occurs', novelty, now_s)
+            co_occurs = self._reinforce_edge(sound_node, other_node, 'co_occurs', novelty, now_s)
             self._reinforce_edge(other_node, sound_node, 'co_occurs', novelty, now_s)
+            updates.append({
+                'type': 'co_occurrence',
+                'description': f'Pattern reinforced: {sound_type} <-> {other}',
+                'sound_a': sound_type,
+                'sound_b': other,
+                'weight': co_occurs['weight'],
+                'count': co_occurs['count'],
+            })
+        self._remember_updates(updates)
+        return updates
+
+    def pattern_summary(self, limit: int = 5) -> Dict:
+        sound_location_patterns = []
+        location_sound_patterns = []
+        co_occurrence_by_pair = {}
+        for source, target, attrs in self.graph.edges(data=True):
+            relation = attrs.get('relation_type', '')
+            pattern = {
+                'weight': float(attrs.get('weight', 0.0)),
+                'count': int(attrs.get('count', 0)),
+            }
+            if relation == 'heard_in':
+                pattern.update({
+                    'sound': self._node_label(source, 'sound:'),
+                    'location': self._node_label(target, 'location:'),
+                })
+                sound_location_patterns.append(pattern)
+            elif relation == 'typical_for':
+                pattern.update({
+                    'location': self._node_label(source, 'location:'),
+                    'sound': self._node_label(target, 'sound:'),
+                })
+                location_sound_patterns.append(pattern)
+            elif relation == 'co_occurs':
+                sound_a = self._node_label(source, 'sound:')
+                sound_b = self._node_label(target, 'sound:')
+                if not sound_a or not sound_b or sound_a == sound_b:
+                    continue
+                pair = tuple(sorted((sound_a, sound_b)))
+                existing = co_occurrence_by_pair.get(pair)
+                if existing is None or pattern['weight'] > existing['weight']:
+                    pattern.update({'sound_a': pair[0], 'sound_b': pair[1]})
+                    co_occurrence_by_pair[pair] = pattern
+
+        sound_patterns = []
+        time_patterns = []
+        for node_id, attrs in self.graph.nodes(data=True):
+            if attrs.get('type') != 'sound_type':
+                continue
+            sound = attrs.get('sound_type', self._node_label(node_id, 'sound:'))
+            sound_patterns.append({
+                'sound': sound,
+                'familiarity': float(attrs.get('familiarity', 0.0)),
+                'count': int(attrs.get('episode_count', 0)),
+                'last_seen': float(attrs.get('last_seen', 0.0)),
+            })
+            for period, count in self._time_period_counts(attrs.get('hour_hist', [0] * 24)).items():
+                if count > 0:
+                    time_patterns.append({'sound': sound, 'period': period, 'count': count})
+
+        return {
+            'sound_patterns': self._top_patterns(sound_patterns, 'count', limit),
+            'sound_location_patterns': self._top_patterns(sound_location_patterns, 'weight', limit),
+            'location_sound_patterns': self._top_patterns(location_sound_patterns, 'weight', limit),
+            'co_occurrence_patterns': self._top_patterns(list(co_occurrence_by_pair.values()), 'weight', limit),
+            'time_patterns': self._top_patterns(time_patterns, 'count', limit),
+            'recent_updates': list(self.recent_updates[:limit]),
+        }
 
     def prune(self, min_weight: float, older_than_s: float) -> None:
         now_s = time.time()
@@ -179,7 +280,7 @@ class LongTermMemory:
         if not self.graph.has_node(node_id):
             self.graph.add_node(node_id, type='location', location_id=location_id)
 
-    def _reinforce_edge(self, source: str, target: str, relation_type: str, novelty: float, now_s: float) -> None:
+    def _reinforce_edge(self, source: str, target: str, relation_type: str, novelty: float, now_s: float) -> Dict:
         if self.graph.has_edge(source, target):
             attrs = self.graph[source][target]
             old_weight = float(attrs.get('weight', 0.0))
@@ -198,6 +299,40 @@ class LongTermMemory:
                 last_updated=now_s,
                 last_novelty=novelty,
             )
+            attrs = self.graph[source][target]
+        return {
+            'weight': float(attrs.get('weight', 0.0)),
+            'count': int(attrs.get('count', 0)),
+        }
+
+    def _remember_updates(self, updates: List[Dict]) -> None:
+        for update in reversed(updates):
+            self.recent_updates.insert(0, update)
+        del self.recent_updates[20:]
+
+    def _node_label(self, node_id: str, prefix: str) -> str:
+        return node_id.split(':', 1)[1] if node_id.startswith(prefix) else node_id
+
+    def _top_patterns(self, patterns: List[Dict], score_key: str, limit: int) -> List[Dict]:
+        return sorted(
+            patterns,
+            key=lambda item: (float(item.get(score_key, 0.0)), int(item.get('count', 0))),
+            reverse=True,
+        )[:max(0, limit)]
+
+    def _time_period_counts(self, hour_hist) -> Dict[str, int]:
+        if not isinstance(hour_hist, list) or len(hour_hist) != 24:
+            hour_hist = [0] * 24
+        return {
+            'morning': sum(int(hour_hist[hour]) for hour in range(5, 12)),
+            'afternoon': sum(int(hour_hist[hour]) for hour in range(12, 17)),
+            'evening': sum(int(hour_hist[hour]) for hour in range(17, 22)),
+            'night': sum(int(hour_hist[hour]) for hour in list(range(0, 5)) + [22, 23]),
+        }
+
+    def _strongest_time_period(self, hour_hist) -> Tuple[str, int]:
+        counts = self._time_period_counts(hour_hist)
+        return max(counts.items(), key=lambda item: item[1])
 
 
 class WorkingMemory:

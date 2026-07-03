@@ -4,7 +4,6 @@ import time
 from collections import deque
 
 import networkx as nx
-import rclpy
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from python_qt_binding.QtCore import QObject, QSize, Qt, QTimer, pyqtSignal
@@ -24,13 +23,13 @@ from python_qt_binding.QtWidgets import (
 from rqt_gui_py.plugin import Plugin
 from std_msgs.msg import String
 
-from auditory_memory_msgs.msg import AuditoryEpisode, AuditoryWorkingMemoryState
+from auditory_memory_msgs.msg import AuditoryWorkingMemoryState
 
 
 class _RosQtBridge(QObject):
     graph_received = pyqtSignal(dict)
     state_received = pyqtSignal(object)
-    consolidation_received = pyqtSignal(object)
+    patterns_received = pyqtSignal(dict)
 
 
 class AuditoryMemoryPlugin(Plugin):
@@ -38,7 +37,7 @@ class AuditoryMemoryPlugin(Plugin):
 
     GRAPH_TOPIC_DEFAULT = '/auditory_memory/graph_viz'
     STATE_TOPIC_DEFAULT = '/auditory_memory/wm_state'
-    CONSOLIDATION_TOPIC_DEFAULT = '/auditory_memory/consolidation'
+    LTM_PATTERNS_TOPIC_DEFAULT = '/auditory_memory/ltm_patterns'
 
     def __init__(self, context):
         super().__init__(context)
@@ -47,7 +46,7 @@ class AuditoryMemoryPlugin(Plugin):
         self._node = context.node
         self._graph_sub = None
         self._state_sub = None
-        self._consolidation_sub = None
+        self._patterns_sub = None
         self._paused = False
         self._latest_graph = None
         self._latest_state = None
@@ -60,7 +59,7 @@ class AuditoryMemoryPlugin(Plugin):
         self._bridge = _RosQtBridge()
         self._bridge.graph_received.connect(self._on_graph_received)
         self._bridge.state_received.connect(self._on_state_received)
-        self._bridge.consolidation_received.connect(self._on_consolidation_received)
+        self._bridge.patterns_received.connect(self._on_patterns_received)
 
         self._widget = QWidget()
         self._widget.setObjectName('AuditoryMemoryGraphViewer')
@@ -76,7 +75,7 @@ class AuditoryMemoryPlugin(Plugin):
         QTimer.singleShot(0, self._maximize_window)
         self._subscribe_graph(self.GRAPH_TOPIC_DEFAULT)
         self._subscribe_state(self.STATE_TOPIC_DEFAULT)
-        self._subscribe_consolidation(self.CONSOLIDATION_TOPIC_DEFAULT)
+        self._subscribe_patterns(self.LTM_PATTERNS_TOPIC_DEFAULT)
 
         self._redraw_timer = QTimer(self._widget)
         self._redraw_timer.timeout.connect(self._redraw_if_needed)
@@ -138,11 +137,11 @@ class AuditoryMemoryPlugin(Plugin):
         scroll.setWidgetResizable(True)
         scroll.setWidget(self._episode_list)
         side_layout.addWidget(scroll, stretch=1)
-        side_layout.addWidget(QLabel('Recent Consolidations'))
-        self._consolidation_list = QListWidget()
-        self._consolidation_list.setMaximumHeight(140)
-        self._consolidation_list.setUniformItemSizes(False)
-        side_layout.addWidget(self._consolidation_list)
+        side_layout.addWidget(QLabel('Long-Term Memory Patterns'))
+        self._patterns_list = QListWidget()
+        self._patterns_list.setUniformItemSizes(False)
+        self._patterns_list.addItem('Waiting for Long-Term Memory patterns...')
+        side_layout.addWidget(self._patterns_list, stretch=1)
         side_layout.addWidget(QLabel('Arousal history'))
         self._history_figure = Figure(figsize=(3.6, 2.1))
         self._history_canvas = FigureCanvas(self._history_figure)
@@ -166,11 +165,10 @@ class AuditoryMemoryPlugin(Plugin):
         self._state_sub = self._node.create_subscription(
             AuditoryWorkingMemoryState, topic, self._state_cb, 10)
 
-    def _subscribe_consolidation(self, topic):
-        if self._consolidation_sub is not None:
-            self._node.destroy_subscription(self._consolidation_sub)
-        self._consolidation_sub = self._node.create_subscription(
-            AuditoryEpisode, topic, self._consolidation_cb, 10)
+    def _subscribe_patterns(self, topic):
+        if self._patterns_sub is not None:
+            self._node.destroy_subscription(self._patterns_sub)
+        self._patterns_sub = self._node.create_subscription(String, topic, self._patterns_cb, 10)
 
     def _graph_cb(self, msg):
         try:
@@ -183,8 +181,13 @@ class AuditoryMemoryPlugin(Plugin):
     def _state_cb(self, msg):
         self._bridge.state_received.emit(msg)
 
-    def _consolidation_cb(self, msg):
-        self._bridge.consolidation_received.emit(msg)
+    def _patterns_cb(self, msg):
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self._node.get_logger().warning('Invalid auditory ltm_patterns JSON received')
+            return
+        self._bridge.patterns_received.emit(payload)
 
     def _on_graph_received(self, payload):
         if self._paused:
@@ -233,31 +236,71 @@ class AuditoryMemoryPlugin(Plugin):
             self._episode_list.item(self._episode_list.count() - 1).setSizeHint(QSize(260, 40))
         self._draw_history()
 
-    def _on_consolidation_received(self, msg):
+    def _on_patterns_received(self, payload):
         if self._paused:
             return
-        entry = self._format_consolidation(msg)
-        self._consolidation_list.insertItem(0, entry)
-        self._consolidation_list.item(0).setSizeHint(QSize(260, 28))
-        while self._consolidation_list.count() > 10:
-            self._consolidation_list.takeItem(self._consolidation_list.count() - 1)
-        self._node.get_logger().info(
-            f'RQT received consolidation: {msg.sound_type or "unknown"} in {msg.location_id or "unknown"}')
+        self._patterns_list.clear()
+        entries = self._format_patterns(payload)
+        if not entries:
+            entries = ['Waiting for Long-Term Memory patterns...']
+        for entry in entries:
+            self._patterns_list.addItem(entry)
+            self._patterns_list.item(self._patterns_list.count() - 1).setSizeHint(QSize(260, 24))
 
-    def _format_consolidation(self, msg):
-        stamp_s = float(msg.started_at.sec) + float(msg.started_at.nanosec) / 1e9
-        time_label = time.strftime('%H:%M', time.localtime(stamp_s)) if stamp_s > 0.0 else '--:--'
-        sounds = [msg.sound_type] if msg.sound_type else []
-        for sound in msg.co_occurring_sounds:
-            if sound and sound not in sounds:
-                sounds.append(sound)
-        sound_label = ' + '.join(sounds) if sounds else 'unknown'
-        location = msg.location_id or 'unknown'
-        started_s = float(msg.started_at.sec) + float(msg.started_at.nanosec) / 1e9
-        last_s = float(msg.last_heard.sec) + float(msg.last_heard.nanosec) / 1e9
-        duration_s = max(0.0, last_s - started_s)
-        duration_label = f' ({duration_s:.1f}s)' if duration_s > 0.0 else ''
-        return f'{time_label} {location}: {sound_label}{duration_label}'
+    def _format_patterns(self, payload):
+        entries = []
+        sound_locations = payload.get('sound_location_patterns', [])[:5]
+        if sound_locations:
+            entries.append('Sound-location')
+            for item in sound_locations:
+                entries.append(
+                    self._pattern_line(
+                        item.get('sound', '?'),
+                        item.get('location', '?'),
+                        '->',
+                        f"w={float(item.get('weight', 0.0)):.2f}"))
+        time_patterns = payload.get('time_patterns', [])[:5]
+        if time_patterns:
+            self._append_section_gap(entries)
+            entries.append('Time-of-day')
+            for item in time_patterns:
+                entries.append(
+                    self._pattern_line(
+                        item.get('sound', '?'),
+                        item.get('period', '?'),
+                        '->',
+                        f"count={int(item.get('count', 0))}"))
+        co_occurrences = payload.get('co_occurrence_patterns', [])[:5]
+        if co_occurrences:
+            self._append_section_gap(entries)
+            entries.append('Co-occurrence')
+            for item in co_occurrences:
+                entries.append(
+                    self._pattern_line(
+                        item.get('sound_a', '?'),
+                        item.get('sound_b', '?'),
+                        '<->',
+                        f"w={float(item.get('weight', 0.0)):.2f}"))
+        recent_updates = payload.get('recent_updates', [])[:5]
+        if recent_updates:
+            self._append_section_gap(entries)
+            entries.append('Recent updates')
+            for item in recent_updates:
+                entries.append(f"- {self._short_update(item)}")
+        return entries
+
+    def _append_section_gap(self, entries):
+        if entries and entries[-1] != '':
+            entries.append('')
+
+    def _pattern_line(self, left, right, relation, value):
+        pattern = f'{left} {relation} {right}'
+        return f'- {pattern:<34} {value}'
+
+    def _short_update(self, item):
+        description = item.get('description', 'Pattern updated')
+        description = description.replace('Pattern reinforced: ', 'reinforced ')
+        return description.replace(' <-> ', ' <-> ').replace(' -> ', ' -> ')
 
     def _redraw_if_needed(self):
         if self._graph_dirty and self._latest_graph is not None:
@@ -419,7 +462,8 @@ class AuditoryMemoryPlugin(Plugin):
         self._arousal_history.clear()
         self._contextual_urgency_by_episode = {}
         self._episode_list.clear()
-        self._consolidation_list.clear()
+        self._patterns_list.clear()
+        self._patterns_list.addItem('Waiting for Long-Term Memory patterns...')
         self._arousal_value.setText('Arousal: 0.00')
         self._focused_sound.setText('Focused sound: -')
         self._focused_location.setText('Focused location: -')
@@ -442,6 +486,6 @@ class AuditoryMemoryPlugin(Plugin):
         if self._state_sub is not None:
             self._node.destroy_subscription(self._state_sub)
             self._state_sub = None
-        if self._consolidation_sub is not None:
-            self._node.destroy_subscription(self._consolidation_sub)
-            self._consolidation_sub = None
+        if self._patterns_sub is not None:
+            self._node.destroy_subscription(self._patterns_sub)
+            self._patterns_sub = None

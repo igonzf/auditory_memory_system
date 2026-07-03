@@ -28,7 +28,6 @@ class WorkingMemoryNode(Node):
         self.declare_parameter('consolidation_topic', '/auditory_memory/consolidation')
         self.declare_parameter('timer_hz', 5.0)
 
-        self.declare_parameter('active_gap_s', 1.0)
         self.declare_parameter('inactive_gap_s', 5.0)
         self.declare_parameter('episode_ttl_s', 600.0)
         self.declare_parameter('co_occurrence_window_s', 2.0)

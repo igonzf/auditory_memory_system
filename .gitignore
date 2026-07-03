@@ -1,0 +1,20 @@
+# ROS 2 workspace outputs
+build/
+install/
+log/
+
+# Python generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local robot/demo memory data
+auditory_memory_data/
+*.ltm.json
+
+# Editor and OS artifacts
+*~
+*.swp
+.DS_Store

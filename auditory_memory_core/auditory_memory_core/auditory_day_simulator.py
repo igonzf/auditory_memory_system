@@ -20,6 +20,8 @@ class ScenarioEvent:
     novelty_label: str
     arousal_hint: float
     description: str
+    phase: str = ''
+    expected: str = ''
 
 
 class AuditoryDaySimulator(Node):
@@ -30,6 +32,7 @@ class AuditoryDaySimulator(Node):
         'fast': 3.0 * 60.0,
         'anomaly': 5.0 * 60.0,
         'learning': 5.0 * 60.0,
+        'learn_then_anomaly': 5.0 * 60.0,
     }
 
     ROOM_POSES: Dict[str, Tuple[float, float, float]] = {
@@ -59,8 +62,10 @@ class AuditoryDaySimulator(Node):
         self.sim_day_hours = float(self.get_parameter('sim_day_hours').value)
         self.num_days = int(self.get_parameter('num_days').value)
         self.speed_multiplier = float(self.get_parameter('speed_multiplier').value)
-        if self.demo_mode != 'learning':
+        if self.demo_mode not in ('learning', 'learn_then_anomaly'):
             self.num_days = 1
+        elif self.demo_mode == 'learn_then_anomaly':
+            self.num_days = max(3, self.num_days)
         else:
             self.num_days = max(1, self.num_days)
 
@@ -80,6 +85,7 @@ class AuditoryDaySimulator(Node):
             0.0, (self.simulated_end_minute - self.simulated_start_minute) / 60.0)
         self.next_index = 0
         self.finished = False
+        self.current_phase = ''
         self.timer = self.create_timer(0.05, self._tick)
         self.get_logger().info(
             f'Auditory day simulator mode={self.demo_mode} publishing {len(self.schedule)} events to {topic}')
@@ -120,6 +126,8 @@ class AuditoryDaySimulator(Node):
             return self._anomaly_events()
         if self.demo_mode == 'learning':
             return self._learning_events()
+        if self.demo_mode == 'learn_then_anomaly':
+            return self._learn_then_anomaly_events()
         return self._natural_day_events()
 
     def _natural_day_events(self, day: int = 1) -> List[ScenarioEvent]:
@@ -150,14 +158,14 @@ class AuditoryDaySimulator(Node):
                           'Urgent voices after the glass breaking event'),
             ScenarioEvent(day, 20, 35, 'living_room', ('tv_on', 'voices'), 'routine', 'LOW', 0.22,
                           'Evening TV and voices in the living room'),
-            ScenarioEvent(day, 22, 15, 'bedroom', ('quiet_bedroom_sounds',), 'routine', 'LOW', 0.12,
-                          'Quiet bedroom sounds at night'),
+            ScenarioEvent(day, 22, 15, 'bedroom', ('soft_voices',), 'routine', 'LOW', 0.12,
+                          'Soft voices in the bedroom at night'),
         ]
 
     def _anomaly_events(self) -> List[ScenarioEvent]:
         return [
-            ScenarioEvent(1, 2, 45, 'bedroom', ('quiet_bedroom_sounds',), 'routine', 'LOW', 0.10,
-                          'Quiet bedroom baseline before the anomaly'),
+            ScenarioEvent(1, 2, 45, 'bedroom', ('soft_voices',), 'routine', 'LOW', 0.10,
+                          'Soft voices baseline before the anomaly'),
             ScenarioEvent(1, 3, 0, 'hallway', ('door_opening', 'footsteps'), 'alarming', 'MAX', 1.0,
                           'Door opening and footsteps at 03:00'),
             ScenarioEvent(1, 3, 18, 'living_room', ('unknown_sound',), 'unknown', 'MAX', 0.95,
@@ -174,6 +182,111 @@ class AuditoryDaySimulator(Node):
             events.extend(self._routine_learning_day(day))
         return events
 
+    def _learn_then_anomaly_events(self) -> List[ScenarioEvent]:
+        events: List[ScenarioEvent] = []
+        initial_phase = 'Learning routine auditory patterns'
+        return_phase = 'Returning to routine pattern reinforcement'
+
+        events.extend([
+            event for event in self._pattern_learning_day(1, initial_phase)
+            if event.hour < 10
+        ])
+        events.extend([
+            ScenarioEvent(
+                1, 10, 15, 'living_room', ('water_running',),
+                'wrong_context_after_initial_learning', 'HIGH', 0.84,
+                'Water running in the living room after initial learning',
+                'First anomaly after initial learning',
+                'Water running should have early bathroom support, not living_room support.'),
+        ])
+        events.extend([
+            event for event in self._pattern_learning_day(1, return_phase)
+            if event.hour >= 12
+        ])
+
+        events.extend([
+            event for event in self._pattern_learning_day(2, return_phase)
+            if event.hour < 21
+        ])
+        events.extend([
+            ScenarioEvent(
+                2, 21, 40, 'living_room', ('alarm',),
+                'wrong_context_after_additional_learning', 'HIGH', 0.88,
+                'Alarm at night in the living room',
+                'Second anomaly after additional learning',
+                'Alarm should be familiar in bedroom/morning, not living_room/night.'),
+        ])
+
+        events.extend([
+            ScenarioEvent(
+                3, 3, 0, 'hallway', ('door_opening', 'footsteps'),
+                'anomaly_after_learning', 'HIGH', 0.90,
+                'Door opening and footsteps at 03:00 after routine learning',
+                'Final anomaly after routine reinforcement',
+                'Co-occurrence may be familiar, but night timing should be unusual.'),
+            ScenarioEvent(
+                3, 3, 18, 'living_room', ('unknown_sound',),
+                'unknown_after_learning', 'MAX', 0.95,
+                'Unknown sound with no learned routine pattern',
+                'Final anomaly after routine reinforcement',
+                'No strong sound-location or time pattern should exist.'),
+            ScenarioEvent(
+                3, 3, 45, 'kitchen', ('glass_breaking',),
+                'alarming_after_learning', 'MAX', 0.98,
+                'Glass breaking after routine patterns have formed',
+                'Final anomaly after routine reinforcement',
+                'No routine glass_breaking pattern should exist.'),
+        ])
+        events.extend(self._pattern_learning_day(3, return_phase))
+        for day in range(4, self.num_days + 1):
+            events.extend(self._pattern_learning_day(day, return_phase))
+        return events
+
+    def _pattern_learning_day(self, day: int, phase: str = 'Learning routine auditory patterns') -> List[ScenarioEvent]:
+        return [
+            ScenarioEvent(
+                day, 7, 0, 'bedroom', ('alarm',), 'routine_learning', 'MEDIUM', 0.55,
+                'Morning alarm routine', phase,
+                'alarm -> bedroom and alarm -> morning should be reinforced after consolidation.'),
+            ScenarioEvent(
+                day, 7, 35, 'bathroom', ('water_running',), 'routine_learning', 'MEDIUM', 0.42,
+                'Bathroom water running routine', phase,
+                'water_running -> bathroom and water_running -> morning should be reinforced.'),
+            ScenarioEvent(
+                day, 8, 5, 'kitchen', ('coffee_machine',), 'routine_learning', 'MEDIUM', 0.45,
+                'Morning coffee routine', phase,
+                'coffee_machine -> kitchen and coffee_machine -> morning should be reinforced.'),
+            ScenarioEvent(
+                day, 8, 35, 'hallway', ('door_opening', 'footsteps'),
+                'routine_learning', 'MEDIUM', 0.46,
+                'Morning hallway departure sounds', phase,
+                'door_opening <-> footsteps and hallway associations should be reinforced.'),
+            ScenarioEvent(
+                day, 12, 30, 'bathroom', ('water_running',), 'routine_learning', 'LOW', 0.30,
+                'Midday bathroom water use', phase,
+                'water_running -> bathroom should strengthen across repeated contexts.'),
+            ScenarioEvent(
+                day, 17, 35, 'hallway', ('door_opening', 'footsteps'),
+                'routine_learning', 'MEDIUM', 0.46,
+                'Door opening and footsteps when returning home', phase,
+                'door_opening <-> footsteps should become a co-occurrence pattern.'),
+            ScenarioEvent(
+                day, 18, 15, 'kitchen', ('cooking_sounds', 'voices'),
+                'routine_learning', 'LOW', 0.32,
+                'Cooking with voices in the kitchen', phase,
+                'cooking_sounds -> kitchen and cooking_sounds <-> voices should be reinforced.'),
+            ScenarioEvent(
+                day, 20, 35, 'living_room', ('tv_on', 'voices'),
+                'routine_learning', 'LOW', 0.22,
+                'Evening TV and voices in the living room', phase,
+                'tv_on <-> voices, tv_on -> living_room, and evening profiles should be reinforced.'),
+            ScenarioEvent(
+                day, 22, 15, 'bedroom', ('soft_voices',),
+                'routine_learning', 'LOW', 0.12,
+                'Soft voices in the bedroom at night', phase,
+                'soft_voices -> bedroom/night should be reinforced.'),
+        ]
+
     def _routine_learning_day(self, day: int) -> List[ScenarioEvent]:
         return [
             event for event in self._natural_day_events(day)
@@ -181,6 +294,9 @@ class AuditoryDaySimulator(Node):
         ]
 
     def _publish_event(self, day_index: int, event: ScenarioEvent):
+        if event.phase and event.phase != self.current_phase:
+            self.current_phase = event.phase
+            self.get_logger().info(f'[DEMO PHASE] {event.phase}')
         sim_stamp_s = self.time_offset_s + self._event_absolute_minute(event) * 60
         for sound_index, sound in enumerate(event.sounds):
             msg = AuditoryObservation()
@@ -197,6 +313,8 @@ class AuditoryDaySimulator(Node):
             f'{event.room.upper()} | {sounds} | {event.category.upper()} | '
             f'expected novelty: {event.novelty_label} | arousal hint: {event.arousal_hint:.2f} | '
             f'{event.description}')
+        if event.expected:
+            self.get_logger().info(f'[LTM EXPECTED] {event.expected}')
 
     def _event_absolute_minute(self, event: ScenarioEvent) -> int:
         return (event.day - 1) * 24 * 60 + event.hour * 60 + event.minute

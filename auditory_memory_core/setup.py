@@ -18,7 +18,7 @@ setup(
     zip_safe=True,
     maintainer='gentlebots',
     maintainer_email='igonzf06@estudiantes.unileon.es',
-    description='TODO: Package description',
+    description='Core nodes, simulators, and rqt plugin for auditory memory.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
@@ -27,7 +27,6 @@ setup(
             'auditory_memory_node = auditory_memory_core.auditory_memory_node:main',
             'long_term_memory_node = auditory_memory_core.long_term_memory_node:main',
             'auditory_day_simulator = auditory_memory_core.auditory_day_simulator:main',
-            'simple_audio_simulator = auditory_memory_core.simple_audio_simulator:main',
         ],
     },
 )

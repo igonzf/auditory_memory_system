@@ -15,8 +15,6 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/AuditoryObservation.msg"
   "msg/AuditoryEpisode.msg"
-  "msg/AuditoryObject.msg"
-  "msg/AuditoryMemoryState.msg"
   "msg/AuditoryWorkingMemoryState.msg"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
 )
