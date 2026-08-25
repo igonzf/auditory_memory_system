@@ -1,4 +1,5 @@
 import json
+import os
 
 import rclpy
 from rclpy.node import Node
@@ -18,9 +19,22 @@ class LongTermMemoryNode(Node):
         self.declare_parameter('ltm_serialize_interval_s', 30.0)
         self.declare_parameter('ltm_prune_min_weight', 0.02)
         self.declare_parameter('ltm_prune_older_than_s', 30.0 * 24.0 * 3600.0)
+        self.declare_parameter('unknown_location_label', 'unknown_location')
+        self.declare_parameter('learn_unknown_location_patterns', False)
+        self.declare_parameter('location_missing_neutral_congruence', 0.5)
 
-        self.ltm = LongTermMemory(self.get_parameter('ltm_path').get_parameter_value().string_value)
+        ltm_path = self.get_parameter('ltm_path').get_parameter_value().string_value
+        self.ltm = LongTermMemory(
+            ltm_path,
+            unknown_location_label=self.get_parameter(
+                'unknown_location_label').get_parameter_value().string_value,
+            learn_unknown_location_patterns=bool(
+                self.get_parameter('learn_unknown_location_patterns').value),
+            location_missing_neutral_congruence=float(
+                self.get_parameter('location_missing_neutral_congruence').value),
+        )
         self.dirty = False
+        self._log_ltm_startup(ltm_path)
         self.sub = self.create_subscription(
             AuditoryEpisode,
             self.get_parameter('consolidation_topic').get_parameter_value().string_value,
@@ -77,6 +91,20 @@ class LongTermMemoryNode(Node):
                 self.get_logger().info(
                     f"LTM time pattern updated: {update.get('sound')} -> {update.get('period')} "
                     f"count={int(update.get('count', 0))}")
+
+    def _log_ltm_startup(self, ltm_path: str) -> None:
+        summary = self.ltm.summary_counts()
+        expanded_path = os.path.expanduser(ltm_path)
+        self.get_logger().info(
+            f'Long-Term Memory using LTM path: {expanded_path} '
+            f'(exists={os.path.exists(expanded_path)})')
+        self.get_logger().info(
+            'Loaded LTM: '
+            f"{summary['sounds']} sounds, {summary['locations']} locations, "
+            f"{summary['sound_location_patterns']} sound-location patterns, "
+            f"{summary['co_occurrence_patterns']} co-occurrence patterns, "
+            f"{summary['time_patterns']} time patterns, "
+            f"{summary['nodes']} nodes, {summary['edges']} edges")
 
     def close(self) -> None:
         if self.dirty:

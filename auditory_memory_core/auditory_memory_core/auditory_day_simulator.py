@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import time
 from typing import Dict, List, Tuple
 
 import rclpy
@@ -77,7 +78,7 @@ class AuditoryDaySimulator(Node):
         topic = self.get_parameter('publish_topic').get_parameter_value().string_value
         self.publisher = self.create_publisher(AuditoryObservation, topic, 10)
         self.start_wall_s = self.get_clock().now().nanoseconds / 1e9
-        self.time_offset_s = self.start_wall_s
+        self.sim_epoch_s = self._local_midnight_s(self.start_wall_s)
         self.schedule = self._build_schedule()
         self.simulated_start_minute = min(self._event_absolute_minute(event) for event in self.schedule_events)
         self.simulated_end_minute = max(self._event_absolute_minute(event) for event in self.schedule_events)
@@ -297,7 +298,7 @@ class AuditoryDaySimulator(Node):
         if event.phase and event.phase != self.current_phase:
             self.current_phase = event.phase
             self.get_logger().info(f'[DEMO PHASE] {event.phase}')
-        sim_stamp_s = self.time_offset_s + self._event_absolute_minute(event) * 60
+        sim_stamp_s = self.sim_epoch_s + self._event_absolute_minute(event) * 60
         for sound_index, sound in enumerate(event.sounds):
             msg = AuditoryObservation()
             msg.header.stamp.sec = int(sim_stamp_s)
@@ -336,6 +337,20 @@ class AuditoryDaySimulator(Node):
         if 17 <= hour < 22:
             return 'evening'
         return 'night'
+
+    def _local_midnight_s(self, timestamp_s: float) -> float:
+        local = time.localtime(timestamp_s)
+        return time.mktime((
+            local.tm_year,
+            local.tm_mon,
+            local.tm_mday,
+            0,
+            0,
+            0,
+            local.tm_wday,
+            local.tm_yday,
+            local.tm_isdst,
+        ))
 
 
 def main(args=None):

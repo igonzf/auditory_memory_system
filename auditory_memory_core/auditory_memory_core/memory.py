@@ -29,6 +29,7 @@ def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
 class NoveltyEvidence:
     familiarity: float
     location_congruence: float
+    location_available: bool
     time_expectedness: float
     novelty: float
 
@@ -44,8 +45,17 @@ class ContextEvent:
 class LongTermMemory:
     """Persistent graph of learned auditory regularities."""
 
-    def __init__(self, path: str):
+    def __init__(
+        self,
+        path: str,
+        unknown_location_label: str = 'unknown_location',
+        learn_unknown_location_patterns: bool = False,
+        location_missing_neutral_congruence: float = 0.5,
+    ):
         self.path = os.path.expanduser(path)
+        self.unknown_location_label = unknown_location_label or 'unknown_location'
+        self.learn_unknown_location_patterns = learn_unknown_location_patterns
+        self.location_missing_neutral_congruence = clamp(location_missing_neutral_congruence)
         self.graph = nx.DiGraph()
         self.recent_updates: List[Dict] = []
         self.load()
@@ -67,6 +77,40 @@ class LongTermMemory:
             if source and target:
                 attrs = {k: v for k, v in edge.items() if k not in ('source', 'target')}
                 self.graph.add_edge(source, target, **attrs)
+
+    def summary_counts(self) -> Dict[str, int]:
+        sounds = 0
+        locations = 0
+        sound_location = 0
+        location_sound = 0
+        co_occurrence = 0
+        time_patterns = 0
+        for _, attrs in self.graph.nodes(data=True):
+            if attrs.get('type') == 'sound_type':
+                sounds += 1
+                hour_hist = attrs.get('hour_hist', [])
+                if isinstance(hour_hist, list) and any(int(value) > 0 for value in hour_hist):
+                    time_patterns += 1
+            elif attrs.get('type') == 'location':
+                locations += 1
+        for _, _, attrs in self.graph.edges(data=True):
+            relation = attrs.get('relation_type', '')
+            if relation == 'heard_in':
+                sound_location += 1
+            elif relation == 'typical_for':
+                location_sound += 1
+            elif relation == 'co_occurs':
+                co_occurrence += 1
+        return {
+            'sounds': sounds,
+            'locations': locations,
+            'sound_location_patterns': sound_location,
+            'location_sound_patterns': location_sound,
+            'co_occurrence_patterns': co_occurrence,
+            'time_patterns': time_patterns,
+            'nodes': self.graph.number_of_nodes(),
+            'edges': self.graph.number_of_edges(),
+        }
 
     def save(self) -> None:
         if not self.path:
@@ -97,8 +141,9 @@ class LongTermMemory:
         sound_node = self.sound_node(sound_type)
         location_node = self.location_node(location_id)
         familiarity = float(self.graph.nodes.get(sound_node, {}).get('familiarity', 0.0))
-        congruence = 0.0
-        if self.graph.has_edge(location_node, sound_node):
+        location_available = self.is_known_location(location_id)
+        congruence = self.location_missing_neutral_congruence
+        if location_available and self.graph.has_edge(location_node, sound_node):
             congruence = float(self.graph[location_node][sound_node].get('weight', 0.0))
         hour = time.localtime(timestamp_s).tm_hour
         hour_hist = self.graph.nodes.get(sound_node, {}).get('hour_hist', [0] * 24)
@@ -114,6 +159,7 @@ class LongTermMemory:
         return NoveltyEvidence(
             familiarity=clamp(familiarity),
             location_congruence=clamp(congruence),
+            location_available=location_available,
             time_expectedness=clamp(time_expectedness),
             novelty=clamp(novelty),
         )
@@ -131,8 +177,10 @@ class LongTermMemory:
         updates = []
         sound_node = self.sound_node(sound_type)
         location_node = self.location_node(location_id)
+        location_available = self.is_known_location(location_id)
         self._ensure_sound(sound_node, sound_type)
-        self._ensure_location(location_node, location_id)
+        if location_available or self.learn_unknown_location_patterns:
+            self._ensure_location(location_node, location_id)
 
         sound_attrs = self.graph.nodes[sound_node]
         count = int(sound_attrs.get('episode_count', 0)) + 1
@@ -160,24 +208,25 @@ class LongTermMemory:
             'count': period_count,
         })
 
-        sound_location = self._reinforce_edge(sound_node, location_node, 'heard_in', novelty, now_s)
-        updates.append({
-            'type': 'sound_location',
-            'description': f'Pattern reinforced: {sound_type} -> {location_id}',
-            'sound': sound_type,
-            'location': location_id,
-            'weight': sound_location['weight'],
-            'count': sound_location['count'],
-        })
-        location_sound = self._reinforce_edge(location_node, sound_node, 'typical_for', novelty, now_s)
-        updates.append({
-            'type': 'location_sound',
-            'description': f'Pattern reinforced: {location_id} -> {sound_type}',
-            'location': location_id,
-            'sound': sound_type,
-            'weight': location_sound['weight'],
-            'count': location_sound['count'],
-        })
+        if location_available or self.learn_unknown_location_patterns:
+            sound_location = self._reinforce_edge(sound_node, location_node, 'heard_in', novelty, now_s)
+            updates.append({
+                'type': 'sound_location',
+                'description': f'Pattern reinforced: {sound_type} -> {location_id}',
+                'sound': sound_type,
+                'location': location_id,
+                'weight': sound_location['weight'],
+                'count': sound_location['count'],
+            })
+            location_sound = self._reinforce_edge(location_node, sound_node, 'typical_for', novelty, now_s)
+            updates.append({
+                'type': 'location_sound',
+                'description': f'Pattern reinforced: {location_id} -> {sound_type}',
+                'location': location_id,
+                'sound': sound_type,
+                'weight': location_sound['weight'],
+                'count': location_sound['count'],
+            })
 
         for other in co_occurring_sounds:
             if not other or other == sound_type:
@@ -208,14 +257,20 @@ class LongTermMemory:
                 'count': int(attrs.get('count', 0)),
             }
             if relation == 'heard_in':
+                location = self._node_label(target, 'location:')
+                if not self.learn_unknown_location_patterns and not self.is_known_location(location):
+                    continue
                 pattern.update({
                     'sound': self._node_label(source, 'sound:'),
-                    'location': self._node_label(target, 'location:'),
+                    'location': location,
                 })
                 sound_location_patterns.append(pattern)
             elif relation == 'typical_for':
+                location = self._node_label(source, 'location:')
+                if not self.learn_unknown_location_patterns and not self.is_known_location(location):
+                    continue
                 pattern.update({
-                    'location': self._node_label(source, 'location:'),
+                    'location': location,
                     'sound': self._node_label(target, 'sound:'),
                 })
                 location_sound_patterns.append(pattern)
@@ -279,6 +334,10 @@ class LongTermMemory:
     def _ensure_location(self, node_id: str, location_id: str) -> None:
         if not self.graph.has_node(node_id):
             self.graph.add_node(node_id, type='location', location_id=location_id)
+
+    def is_known_location(self, location_id: str) -> bool:
+        label = (location_id or '').strip().lower()
+        return bool(label) and label not in ('unknown', 'unknown_location', self.unknown_location_label.lower())
 
     def _reinforce_edge(self, source: str, target: str, relation_type: str, novelty: float, now_s: float) -> Dict:
         if self.graph.has_edge(source, target):
@@ -363,9 +422,12 @@ class WorkingMemory:
         evidence = self.ltm.evaluate(sound_type, location_id, timestamp_s)
         contextual_urgency, context_source = self._contextual_urgency(sound_type, location_id, timestamp_s)
         arousal_evidence = clamp(evidence.novelty + self.context_urgency_boost * contextual_urgency)
+        context_label = self._context_label(evidence, contextual_urgency)
+        location_available = evidence.location_available
 
         self._ensure_sound(sound_node, sound_type, timestamp_s)
-        self._ensure_location(location_node, location_id, timestamp_s)
+        if location_available:
+            self._ensure_location(location_node, location_id, timestamp_s)
         if episode_id is None:
             episode_id = self._episode_node(sound_type, location_id)
             self.graph.add_node(
@@ -378,41 +440,63 @@ class WorkingMemory:
                 last_heard=timestamp_s,
                 co_occurring_sounds=[],
                 intensity=1.0,
+                familiarity=evidence.familiarity,
                 novelty=evidence.novelty,
                 location_congruence=evidence.location_congruence,
+                location_available=location_available,
+                time_expectedness=evidence.time_expectedness,
                 contextual_urgency=contextual_urgency,
+                context_label=context_label,
                 arousal_contribution=arousal_evidence,
                 consolidation_ready=False,
                 consolidated=False,
             )
             self.graph.add_edge(episode_id, sound_node, relation_type='episode_sound', weight=1.0)
-            self.graph.add_edge(episode_id, location_node, relation_type='episode_location', weight=1.0)
+            if location_available:
+                self.graph.add_edge(episode_id, location_node, relation_type='episode_location', weight=1.0)
         else:
             attrs = self.graph.nodes[episode_id]
             attrs['last_heard'] = timestamp_s
             attrs['intensity'] = clamp(float(attrs.get('intensity', 0.0)) + 0.1)
+            attrs['familiarity'] = evidence.familiarity
             attrs['novelty'] = max(float(attrs.get('novelty', 0.0)), evidence.novelty)
             attrs['location_congruence'] = evidence.location_congruence
+            attrs['location_available'] = location_available
+            attrs['time_expectedness'] = evidence.time_expectedness
             attrs['contextual_urgency'] = max(float(attrs.get('contextual_urgency', 0.0)), contextual_urgency)
+            attrs['context_label'] = context_label
             attrs['arousal_contribution'] = max(float(attrs.get('arousal_contribution', 0.0)), arousal_evidence)
 
         sound_attrs = self.graph.nodes[sound_node]
         sound_attrs['activation'] = 1.0
         sound_attrs['hit_count'] = int(sound_attrs.get('hit_count', 0)) + 1
-        location_attrs = self.graph.nodes[location_node]
-        location_attrs['activation'] = 1.0
-        location_attrs['last_active'] = timestamp_s
+        if location_available:
+            location_attrs = self.graph.nodes[location_node]
+            location_attrs['activation'] = 1.0
+            location_attrs['last_active'] = timestamp_s
 
-        self._reinforce_edge(sound_node, location_node, 'heard_in')
-        self._reinforce_edge(location_node, sound_node, 'typical_for')
+        if location_available:
+            self._reinforce_edge(sound_node, location_node, 'heard_in')
+            self._reinforce_edge(location_node, sound_node, 'typical_for')
         self._update_co_occurrences(episode_id, sound_type, timestamp_s)
+        previous_arousal = self.arousal_level
         self.arousal_level = clamp(self.arousal_level + 0.35 * arousal_evidence)
+        hour = time.localtime(timestamp_s).tm_hour
         self.last_arousal_evidence_info = {
             'sound_type': sound_type,
             'location_id': location_id,
+            'hour': hour,
+            'period': self._period_label(hour),
+            'familiarity': evidence.familiarity,
             'novelty': evidence.novelty,
+            'location_congruence': evidence.location_congruence,
+            'location_available': location_available,
+            'time_expectedness': evidence.time_expectedness,
             'contextual_urgency': contextual_urgency,
+            'context_label': context_label,
             'contribution': arousal_evidence,
+            'previous_arousal': previous_arousal,
+            'updated_arousal': self.arousal_level,
         }
         self._remember_high_novelty_context(sound_type, location_id, timestamp_s, evidence.novelty)
         self.last_context_urgency_info = None
@@ -477,7 +561,12 @@ class WorkingMemory:
                     'activation': float(attrs.get('activation', 0.0)),
                     'hit_count': int(attrs.get('hit_count', 0)),
                     'is_focused': node_id == self.focused_episode_id,
+                    'familiarity': float(attrs.get('familiarity', 0.0)),
+                    'location_congruence': float(attrs.get('location_congruence', 0.0)),
+                    'location_available': bool(attrs.get('location_available', True)),
+                    'time_expectedness': float(attrs.get('time_expectedness', 0.0)),
                     'contextual_urgency': float(attrs.get('contextual_urgency', 0.0)),
+                    'context_label': attrs.get('context_label', ''),
                 }
                 for node_id, attrs in self.graph.nodes(data=True)
             ],
@@ -565,8 +654,11 @@ class WorkingMemory:
         for event in self.recent_high_novelty_context:
             if event.sound_type == sound_type and event.location_id == location_id:
                 continue
-            if self.context_urgency_same_location_only and event.location_id != location_id:
-                continue
+            if self.context_urgency_same_location_only:
+                if not self.ltm.is_known_location(location_id) or not self.ltm.is_known_location(event.location_id):
+                    continue
+                if event.location_id != location_id:
+                    continue
             elapsed_s = timestamp_s - event.timestamp_s
             if elapsed_s < self.context_urgency_min_delay_s or elapsed_s > self.context_urgency_window_s:
                 continue
@@ -579,6 +671,37 @@ class WorkingMemory:
                 best_urgency = urgency
                 best_event = event
         return best_urgency, best_event
+
+    def _context_label(self, evidence: NoveltyEvidence, contextual_urgency: float) -> str:
+        familiar = evidence.familiarity >= 0.30
+        location_match = evidence.location_available and evidence.location_congruence >= 0.50
+        time_match = evidence.time_expectedness >= 0.50
+        if contextual_urgency > 0.0:
+            return 'contextually_urgent'
+        if not familiar:
+            return 'unfamiliar_sound'
+        if not evidence.location_available:
+            if time_match:
+                return 'familiar_sound_unknown_location'
+            return 'partially_expected'
+        if location_match and time_match and evidence.novelty < 0.50:
+            return 'expected_routine'
+        if not location_match and not time_match:
+            return 'location_time_violation'
+        if not location_match:
+            return 'location_violation'
+        if not time_match:
+            return 'time_violation'
+        return 'pattern_supported'
+
+    def _period_label(self, hour: int) -> str:
+        if 5 <= hour < 12:
+            return 'morning'
+        if 12 <= hour < 17:
+            return 'afternoon'
+        if 17 <= hour < 22:
+            return 'evening'
+        return 'night'
 
     def _remember_high_novelty_context(
         self,

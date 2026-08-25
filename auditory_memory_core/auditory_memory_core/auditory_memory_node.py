@@ -1,4 +1,6 @@
 import json
+import math
+import os
 from typing import Dict, List
 
 import rclpy
@@ -40,15 +42,27 @@ class WorkingMemoryNode(Node):
         self.declare_parameter('context_urgency_boost', 0.25)
         self.declare_parameter('context_urgency_focus_weight', 0.25)
         self.declare_parameter('arousal_debug_logs', False)
+        self.declare_parameter('unknown_location_label', 'unknown_location')
+        self.declare_parameter('learn_unknown_location_patterns', False)
+        self.declare_parameter('location_missing_neutral_congruence', 0.5)
 
         self.declare_parameter('ltm_path', '/tmp/auditory_ltm.json')
         self.declare_parameter('location_config_path', '')
 
         self.locations = self._load_locations(
             self.get_parameter('location_config_path').get_parameter_value().string_value)
-        self.ltm = LongTermMemory(self.get_parameter('ltm_path').get_parameter_value().string_value)
+        ltm_path = self.get_parameter('ltm_path').get_parameter_value().string_value
+        self.ltm = LongTermMemory(
+            ltm_path,
+            unknown_location_label=self._unknown_location_label(),
+            learn_unknown_location_patterns=bool(
+                self.get_parameter('learn_unknown_location_patterns').value),
+            location_missing_neutral_congruence=float(
+                self.get_parameter('location_missing_neutral_congruence').value),
+        )
         self.memory = WorkingMemory(self.ltm)
         self.logical_now_s = self.get_clock().now().nanoseconds / 1e9
+        self._log_ltm_startup(ltm_path)
 
         self.observation_sub = self.create_subscription(
             AuditoryObservation,
@@ -161,10 +175,29 @@ class WorkingMemoryNode(Node):
         if not info:
             return
         self.get_logger().info(
-            f"Arousal evidence for {info['sound_type']} in {info['location_id']}: "
+            f"Evaluating {info['sound_type']} in {info['location_id']} "
+            f"at {info['period']} (hour={info['hour']:02d}): "
+            f"familiarity={info['familiarity']:.2f}, "
+            f"location_congruence={info['location_congruence']:.2f}, "
+            f"time_expectedness={info['time_expectedness']:.2f}, "
             f"novelty={info['novelty']:.2f}, "
             f"contextual_urgency={info['contextual_urgency']:.2f}, "
-            f"contribution={info['contribution']:.2f}")
+            f"context={info['context_label']}, "
+            f"contribution={info['contribution']:.2f}, "
+            f"arousal={info['previous_arousal']:.2f}->{info['updated_arousal']:.2f}")
+
+    def _log_ltm_startup(self, ltm_path: str) -> None:
+        summary = self.ltm.summary_counts()
+        self.get_logger().info(
+            f'Working Memory using LTM path: {os.path.expanduser(ltm_path)} '
+            f'(exists={os.path.exists(os.path.expanduser(ltm_path))})')
+        self.get_logger().info(
+            'Working Memory loaded LTM: '
+            f"{summary['sounds']} sounds, {summary['locations']} locations, "
+            f"{summary['sound_location_patterns']} sound-location patterns, "
+            f"{summary['co_occurrence_patterns']} co-occurrence patterns, "
+            f"{summary['time_patterns']} time patterns, "
+            f"{summary['nodes']} nodes, {summary['edges']} edges")
 
     def _log_focus_if_changed(self) -> None:
         info = self.memory.last_focus_info
@@ -225,10 +258,18 @@ class WorkingMemoryNode(Node):
     def _location_for_pose(self, msg: AuditoryObservation) -> str:
         x = float(msg.pose.position.x)
         y = float(msg.pose.position.y)
-        for location in self.locations:
-            if location['x_min'] <= x <= location['x_max'] and location['y_min'] <= y <= location['y_max']:
-                return location['id']
-        return msg.header.frame_id or 'unknown'
+        if math.isfinite(x) and math.isfinite(y):
+            for location in self.locations:
+                if location['x_min'] <= x <= location['x_max'] and location['y_min'] <= y <= location['y_max']:
+                    return location['id']
+        frame_id = (msg.header.frame_id or '').strip()
+        if self.ltm.is_known_location(frame_id):
+            return frame_id
+        return self._unknown_location_label()
+
+    def _unknown_location_label(self) -> str:
+        label = self.get_parameter('unknown_location_label').get_parameter_value().string_value
+        return label.strip() or 'unknown_location'
 
     def _load_locations(self, path: str) -> List[Dict[str, float]]:
         if not path:
