@@ -1,17 +1,28 @@
 # Auditory Memory System
 
-ROS 2 packages for contextual auditory memory in a social robot.
+Contextual auditory memory system for ROS 2.
 
 The system does not classify raw audio. It receives pre-processed
-`AuditoryObservation` messages from an upstream audio perception pipeline or the
-included simulator, then adds Working Memory, Long-Term Memory pattern learning,
-novelty, arousal, focus, and rqt visualization.
+`AuditoryObservation` messages from an upstream perception pipeline or the
+included simulator, then maintains Working Memory, Long-Term Memory, pattern
+learning, novelty, arousal, focus, and rqt visualization.
+
+![Auditory Memory demo](docs/auditory_memory_speed.gif)
+
+## What It Does
+
+- Groups recent sounds as active episodes in Working Memory.
+- Learns persistent sound, location, time, and co-occurrence patterns in
+  Long-Term Memory.
+- Estimates whether a sound is familiar, expected in its location, and expected
+  at the current time.
+- Raises novelty, arousal, and focus when an event violates learned patterns.
+- Shows current state and learned patterns in an rqt plugin.
 
 ## Packages
 
 - `auditory_memory_msgs`: ROS 2 message definitions.
-- `auditory_memory_core`: Working Memory, Long-Term Memory, simulators, and rqt
-  plugin.
+- `auditory_memory_core`: memory nodes, simulators, and rqt plugin.
 - `auditory_memory_bringup`: launch files.
 
 ## Build
@@ -71,26 +82,43 @@ ros2 run auditory_memory_core auditory_day_simulator --ros-args \
   -p speed_multiplier:=1.0
 ```
 
-## Documentation
+## Flow
 
-- [Overview](docs/overview.md)
-- [Architecture](docs/architecture.md)
-- [Working Memory](docs/working_memory.md)
-- [Long-Term Memory](docs/long_term_memory.md)
-- [Novelty And Arousal](docs/novelty_arousal.md)
-- [Contextual Urgency](docs/contextual_urgency.md)
-- [Pattern Learning](docs/pattern_learning.md)
-- [Simulator Demos](docs/simulator_demos.md)
-- [rqt Plugin](docs/rqt_plugin.md)
-- [Topics And Messages](docs/topics_and_messages.md)
-- [Timestamp Semantics](docs/timestamp_semantics.md)
+![Auditory Memory data flow](docs/auditory_memory_flow.svg)
+
+Source: [`docs/auditory_memory_flow.sysml`](docs/auditory_memory_flow.sysml)
+
+When a sound arrives, Working Memory creates or updates an active episode. That
+episode is evaluated against Long-Term Memory to compute familiarity, location
+congruence, and time expectedness. When it becomes inactive, it is consolidated
+and reinforces persistent patterns.
+
+## Algorithm Brief
+
+Novelty combines three learned evidence signals:
+
+```text
+novelty =
+  0.40 * (1.0 - familiarity)
++ 0.45 * (1.0 - location_congruence)
++ 0.15 * (1.0 - time_expectedness)
+```
+
+Arousal accumulates novelty and contextual urgency evidence, then decays over
+time. Focus is selected from active episodes using novelty, location
+incongruence, intensity, and contextual urgency.
 
 ## Main Topics
 
-- `/sound_observation`
-- `/auditory_memory/wm_state`
-- `/auditory_memory/graph_viz`
-- `/auditory_memory/consolidation`
-- `/auditory_memory/ltm_patterns`
+- `/sound_observation`: `auditory_memory_msgs/AuditoryObservation` input.
+- `/auditory_memory/wm_state`: Working Memory state, focus, and arousal.
+- `/auditory_memory/graph_viz`: JSON for rqt graph visualization.
+- `/auditory_memory/consolidation`: finished episodes for Long-Term Memory.
+- `/auditory_memory/ltm_patterns`: JSON summary of learned patterns.
 
-See [Topics And Messages](docs/topics_and_messages.md) for details.
+## Details
+
+- [Algorithm and memory](docs/algorithm.md): Working Memory, Long-Term Memory,
+  novelty, arousal, contextual urgency, and pattern learning.
+- [ROS reference](docs/reference.md): topics, messages, rqt plugin, simulators,
+  and timestamp semantics.
