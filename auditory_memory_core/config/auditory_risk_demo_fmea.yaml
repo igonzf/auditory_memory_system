@@ -1,0 +1,57 @@
+# Demo-only adapter from auditory memory evidence to the existing FMEA input shape.
+# It does not change RiskPipeline; it only builds simulated entities/environment
+# from memory outputs so the demo can show habituation over time.
+
+memory_to_fmea:
+  base_attributes:
+    hazard_score: 1.0
+    movability_score: 8.0
+    attentiveness_score: 8.0
+    interaction_level: 1.0
+    obstruction_score: 1.0
+    is_inanimate: true
+
+  # New and incongruent sounds increase the simulated entity attributes used by FMEA.
+  novelty_to_hazard: 5.0
+  incongruence_to_obstruction: 4.0
+  attention_to_interaction: 2.0
+
+  # Familiarity counteracts novelty-driven concern: repeated sounds become routine.
+  familiarity_relief: 5.0
+
+  defaults:
+    entity_type: auditory_event
+    depth_m: 3.0
+    environment_type: office
+    light_conditions: bright
+    presence_of_others: false
+
+  sound_overrides:
+    doorbell_chime:
+      entity_type: attention_request
+      novelty_to_hazard: 1.0
+      incongruence_to_obstruction: 1.0
+    alarm:
+      entity_type: person
+      depth_m: 0.9
+      environment_type: living room
+      light_conditions: dim
+      presence_of_others: true
+      hazard_bonus: 5.0
+      obstruction_bonus: 5.0
+      interaction_bonus: 6.0
+      movability_score: 2.0
+      attentiveness_score: 3.0
+      is_inanimate: false
+
+attention_policy:
+  attend_unfamiliar_sounds: true
+  attention_request_sounds:
+    - doorbell_chime
+  task_importance_order:
+    low: 1
+    medium: 2
+    high: 3
+    critical: 4
+  interrupt_attention_requests_below: high
+  inspect_unfamiliar_below: high

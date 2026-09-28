@@ -8,6 +8,7 @@
   <license>Apache-2.0</license>
 
   <exec_depend>auditory_memory_core</exec_depend>
+  <exec_depend>cs4home_contextualizer_module</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>rqt_gui</exec_depend>

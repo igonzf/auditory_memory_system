@@ -13,6 +13,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name, ['plugin.xml']),
+        ('share/' + package_name + '/config', ['config/auditory_risk_demo_fmea.yaml']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -26,7 +27,9 @@ setup(
             'working_memory_node = auditory_memory_core.auditory_memory_node:main',
             'auditory_memory_node = auditory_memory_core.auditory_memory_node:main',
             'long_term_memory_node = auditory_memory_core.long_term_memory_node:main',
+            'auditory_memory_risk_bridge = auditory_memory_core.auditory_memory_risk_bridge:main',
             'auditory_day_simulator = auditory_memory_core.auditory_day_simulator:main',
+            'auditory_risk_demo = auditory_memory_core.auditory_risk_demo:main',
         ],
     },
 )

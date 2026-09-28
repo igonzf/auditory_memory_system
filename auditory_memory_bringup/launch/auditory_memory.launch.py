@@ -8,6 +8,7 @@ from launch_ros.actions import Node
 def generate_launch_description():
     ltm_path = LaunchConfiguration('ltm_path')
     start_rqt = LaunchConfiguration('start_rqt')
+    start_risk_bridge = LaunchConfiguration('start_risk_bridge')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -18,6 +19,10 @@ def generate_launch_description():
             'start_rqt',
             default_value='true',
             description='Start rqt directly with the auditory memory plugin loaded.'),
+        DeclareLaunchArgument(
+            'start_risk_bridge',
+            default_value='false',
+            description='Publish auditory working memory as FMEA risk context for the demo.'),
 
         Node(
             package='auditory_memory_core',
@@ -37,6 +42,17 @@ def generate_launch_description():
                 'ltm_path': ltm_path,
                 'state_topic': '/auditory_memory/wm_state',
                 'graph_viz_topic': '/auditory_memory/graph_viz',
+            }]),
+
+        Node(
+            package='auditory_memory_core',
+            executable='auditory_memory_risk_bridge',
+            name='auditory_memory_risk_bridge',
+            output='screen',
+            condition=IfCondition(start_risk_bridge),
+            parameters=[{
+                'wm_state_topic': '/auditory_memory/wm_state',
+                'context_topic': '/audio/context',
             }]),
 
         Node(
